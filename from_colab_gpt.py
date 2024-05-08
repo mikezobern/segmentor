@@ -62,15 +62,31 @@ def estimate_loss():
 
 class Zero_block(nn.Module):
     """ raw text embeddings to bunch of semantic matrixes """
-    def __init__(self, number_of_semantic_matrixes, raw_embedding_size, head_size):
+    def __init__(self, number_of_semantic_matrixes, raw_embedding_size, message_embedding_size):
         super().__init__()
         self.number_of_semantic_matrixes = number_of_semantic_matrixes
-        self.head_size = head_size
-        self.linear = torch.nn.Linear(raw_embedding_size, number_of_semantic_matrixes * head_size)
-
-    def forward(self, batch_of_embeddings):
-        B,T,C = batch_of_embeddings.shape
-        self.linear(batch_of_embeddings).view(B,T, self.number_of_semantic_matrixes, self.head_size)
+        self.head_size = message_embedding_size
+        # Единая матрица преобразования для всех семантических проекций пайторч-стиле:
+        self.linear = torch.nn.Linear(raw_embedding_size, number_of_semantic_matrixes * message_embedding_size)
+        print('zero block linear', self.linear.parameters())
+    def forward(self, batch_of_text_embeddings):
+        B, T, C = batch_of_text_embeddings.shape
+        # Получив батчи с сырыми текст-эмбеддингами, преобразуем их в эмбеддинги размера голов:
+        ln = self.linear(batch_of_text_embeddings)
+        btsc = ln.view(B, T, self.number_of_semantic_matrixes, self.head_size)
+        # Здесь, возможно, понадобится нормализация  свежесозданных семантических эмбеддингов
+        pass
+        # Запоминаем форму тензора:
+        B, T, S, C = btsc.shape
+        # Превращаем батч с семантическими векторами в батч матриц в три простых шага
+        # Шаг #1: копируем содержание нод T раз целиком:
+        srep = btsc.repeat(1, T, 1, 1) # B T**T S C
+        # Шаг #2: копируем содержание нод T раз, но повторяясь внутри T-измерения:
+        intl_rep = btsc.repeat_interleave(T, dim = 1) # B T**T S C
+        # Шаг #3: вычисляем евклидову меру
+        s = torch.sum((srep - intl_rep)**2, -1)**0.5 # B T**T S C/C
+        s_reshaped = s.transpose(-2, -1).view(B, S, T, T) # B S T T
+        return s_reshaped
 
 class Head(nn.Module):
     """ one head of self-attention """
@@ -194,6 +210,7 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
+'''
 model = BigramLanguageModel()
 m = model.to(device)
 # print the number of parameters in the model
@@ -221,3 +238,4 @@ for iter in range(max_iters):
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(m.generate(context, max_new_tokens=2000)[0].tolist()))
+'''
