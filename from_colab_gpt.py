@@ -1,49 +1,43 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+torch.manual_seed(1337)
 
 # hyperparameters
-batch_size = 16 # how many independent sequences will we process in parallel?
-block_size = 32 # what is the maximum context length for predictions?
+block_size = 32 # what is the maximum context length for predictions? / number of messages for linking
 max_iters = 5
 eval_interval = 1
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 64
-n_head = 4
-n_layer = 4
+n_embd = 128
+n_head = 8 # число голов
+n_layer = 1
 dropout = 0.0
 # ------------
+number_of_semantic_matrixes = 3
+num_graphs = 2 # formal reply graph, author graph
+heads_for_each_semantic = 1 # сколько голов отдаётся каждой семантической матрице
+free_heads = 3 # Число голов без входящих графов
 
-torch.manual_seed(1337)
-with open('input.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
+raw_embedding_size = 7  # number of chosen test embedding dimentions
+output_size = 5
+batch_size = 2
+num_messages = 6 # number of messages
 
-# here are all the unique characters that occur in this text
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
-# create a mapping from characters to integers
-stoi = { ch:i for i,ch in enumerate(chars) }
-itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
-
-# Train and test splits
-data = torch.tensor(encode(text), dtype=torch.long)
-n = int(0.9*len(data)) # first 90% will be train, rest val
-train_data = data[:n]
-val_data = data[n:]
+# ------------
+# ------------
+batch_of_raw_message_embeddings = torch.randn((batch_size, num_messages, raw_embedding_size))
+batch_of_raw_graphs = torch.randn((batch_size, num_graphs, num_messages, num_messages))
+# ------------
+# ------------
 
 # data loading
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
-    data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    x, y = x.to(device), y.to(device)
-    return x, y
+    pass
+    # предстоит написать!
+    return None
 
 @torch.no_grad()
 def estimate_loss():
@@ -71,11 +65,12 @@ class Zero_block(nn.Module):
         self.linear_2 = torch.nn.Linear(raw_embedding_size, message_embedding_size)
 
     def forward(self, batch_of_text_embeddings, batch_of_links = None):
+        """ Размер пачки эмбеддингов (B T Cr) """
         B, T, C = batch_of_text_embeddings.shape
         # Получив батчи с сырыми текст-эмбеддингами, преобразуем их в эмбеддинги размера голов:
         ln = self.linear(batch_of_text_embeddings)
         btsc = ln.view(B, T, self.number_of_semantic_matrixes, self.head_size)
-        # Здесь, возможно, понадобится нормализация  свежесозданных семантических эмбеддингов
+        # Здесь, возможно, понадобится нормализация
         pass
         # Запоминаем форму тензора:
         B, T, S, C = btsc.shape
@@ -87,48 +82,33 @@ class Zero_block(nn.Module):
         # Шаг #3: вычисляем евклидову меру
         s = torch.sum((srep - intl_rep)**2, -1)**0.5 # B T**T S C/C
         s_reshaped = - s.transpose(-2, -1).view(B, S, T, T)  # B S T T
-        s_reshaped = F.softmax(s_reshaped,-1)
 
         # Теперь получаем эмбеддинги нод из сырых эмбеддингов
         message_embeddings = self.linear_2(batch_of_text_embeddings)
-        # Здесь, возможно, понадобится нормализация  свежесозданных семантических эмбеддингов
+        # Здесь, возможно, понадобится нормализация
         pass
 
         adj_matrices = None
         if batch_of_links!=None:
             # Объединяем пачки матриц смежности графов с пачками семантического внимания (B G T T)
-            adj_matrices = torch.cat([s_reshaped, batch_of_links], dim=1)
+            # В мульхедаттеншене число голов фиксировано и каждой голове нужно дать свою матрицу смежности
+            # Поэтому размерность S должна быть равна числу голов в мультихеде
+            # Логика такая: вводим граф авторов, граф формальных реплаев и добиваем единичными матрицами ("свободными")
+            # Первый этап: посчитать, сколько у нас в сумме семантических и графовых матриц
+            S = self.number_of_semantic_matrixes
+            B,G,T,T = batch_of_links.shape
+            free_heads_number = n_head - S - G
+            # print(S,'S', G, 'G' , n_head, 'n head')
+            assert free_heads_number > 1
+            ones_for_matrices = torch.ones(B,free_heads_number,T,T)
+
+            adj_matrices = torch.cat([s_reshaped, batch_of_links, ones_for_matrices], dim=1)
+            B,S,T,T = adj_matrices.shape; assert S == n_head
+            # adj_matrices = F.softmax(adj_matrices, -1)
 
         return adj_matrices, message_embeddings
 
 class Head(nn.Module):
-
-    """ one head of self-attention """
-    def __init__(self, head_size):
-        super().__init__()
-        self.key = nn.Linear(n_embd, head_size, bias=False)
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        B,T,C = x.shape
-        k = self.key(x)   # (B,T,C)
-        q = self.query(x) # (B,T,C)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
-        wei = self.dropout(wei)
-        # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,C)
-        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
-        return out
-
-
-class Head_with_adjacent(nn.Module):
     """ one head of self-attention """
 
     def __init__(self, head_size):
@@ -140,16 +120,20 @@ class Head_with_adjacent(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, adjacent):
+    def forward(self, x, adjacent=None):
         B, T, C = x.shape
+        B,S,T,T = adjacent.shape
+
         k = self.key(x)  # (B,T,C)
         q = self.query(x)  # (B,T,C)
         # compute attention scores ("affinities")
         wei = q @ k.transpose(-2, -1) * C ** -0.5  # (B, T, C) @ (B, C, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B, T, T)
+        # wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B, T, T)
 
-        wei = wei*adjacent
-
+        if adjacent!=None:
+            wei = wei*adjacent # заменить на маскирование (графы авторов и формальных реплаев чисто нули и единицы)
+        else:
+            pass
         wei = F.softmax(wei, dim=-1)  # (B, T, T)
         wei = self.dropout(wei)
         # perform the weighted aggregation of the values
@@ -163,14 +147,23 @@ class MultiHeadAttention(nn.Module):
 
     def __init__(self, num_heads, head_size):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.num_heads = num_heads
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(self.num_heads)])
+
         self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
+    def forward(self, x, adjacent = None):
+
+        if adjacent!=None:
+            print('multihead adjacent shape', adjacent.shape)
+            print('multihead adjacent shape[:, 1, :, :]', adjacent[:, 0, :, :].shape)
+            out = torch.cat([self.heads[hi](x, adjacent[:, hi:hi+1, :, :]) for hi in range(self.num_heads)], dim=-1)
+        else:
+            out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.dropout(self.proj(out))
         return out
+
 class FeedFoward(nn.Module):
     """ a simple linear layer followed by a non-linearity """
 
@@ -197,26 +190,51 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
-    def forward(self, x):
-        x = x + self.sa(self.ln1(x))
-        x = x + self.ffwd(self.ln2(x))
+    def forward(self, x, adjacent = None):
+        if adjacent==None:
+            x = x + self.sa(self.ln1(x))
+            x = x + self.ffwd(self.ln2(x))
+        else:
+            x = x + self.sa(self.ln1(x), adjacent)
+            x = x + self.ffwd(self.ln2(x))
+
         return x
 # super simple bigram model
-class BigramLanguageModel(nn.Module):
+class BigramLanguageModel_old(nn.Module):
     def __init__(self):
         super().__init__()
-        # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.zero_block = Zero_block(number_of_semantic_matrixes, raw_embedding_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = nn.Linear(n_embd, vocab_size)
+        self.lm_head = nn.Linear(n_embd, output_size)
 
-    def forward(self, idx, targets=None):
+    def forward(self, raw_mes_embs, graph_adjacenties, targets=None):
+        """ New forward function takes batch of embngs, batch of adjacenties and true attention vector of last message as a target"""
+        B, G, T, T = graph_adjacenties.shape
+        B, T, C = raw_mes_embs.shape
+        adjs, mes_embs = self.zero_block(raw_mes_embs, graph_adjacenties)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device))  # (T,C)
+        x = mes_embs + pos_emb  # (B,T,C)
+        x = self.blocks(x)  # (B,T,C)
+        x = self.ln_f(x)  # (B,T,C)
+        logits = self.lm_head(x)  # (B,T,output_size)
+
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B * T, C)
+            targets = targets.view(B * T)
+            loss = F.cross_entropy(logits, targets)
+
+        return logits, loss
+    def forward_old(self, idx, targets=None):
+
         B, T = idx.shape
 
         # idx and targets are both (B,T) tensor of integers
-        tok_emb = self.token_embedding_table(idx) # (B,T,C)
+        # tok_emb = self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
         x = tok_emb + pos_emb # (B,T,C)
         x = self.blocks(x) # (B,T,C)
@@ -233,7 +251,7 @@ class BigramLanguageModel(nn.Module):
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens):
+    def generate_old(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
@@ -250,6 +268,47 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
+class BigramLanguageModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.zero_block = Zero_block(number_of_semantic_matrixes, raw_embedding_size, n_embd)
+        # self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+        self.block = Block(n_embd,n_head)
+        self.ln_f = nn.LayerNorm(n_embd) # final layer norm
+        self.lm_head = nn.Linear(n_embd, output_size)
+
+    def forward(self, raw_mes_embs, graph_adjacenties, targets=None):
+        """ New forward function takes batch of embngs, batch of adjacenties and true attention vector of last message as a target"""
+        B, G, T, T = graph_adjacenties.shape
+        B, T, C = raw_mes_embs.shape
+        adjs, mes_embs = self.zero_block(raw_mes_embs, graph_adjacenties)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device))  # (T,C)
+        x = mes_embs + pos_emb  # (B,T,C)
+        x = self.block(x,adjs)  # (B,T,C)
+        # x = self.ln_f(x)  # (B,T,C)
+        # logits = self.lm_head(x)  # (B,T,output_size)
+
+        # if targets is None:
+        #     loss = None
+        # else:
+        #     B, T, C = logits.shape
+        #     logits = logits.view(B * T, C)
+        #     targets = targets.view(B * T)
+        #     loss = F.cross_entropy(logits, targets)
+        #
+        # return logits, loss
+        return x
+
+
+model = BigramLanguageModel()
+m = model.to(device)
+# print the number of parameters in the model
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+
+
+r = m(batch_of_raw_message_embeddings,batch_of_raw_graphs)
+print('rrrrrrrrrrrrrrr \n', r)
 '''
 model = BigramLanguageModel()
 m = model.to(device)
