@@ -9,7 +9,7 @@ max_iters = 5
 eval_interval = 1
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 200
+eval_iters = 1
 n_embd = 4 # ME, внутренний эмбеддинг сообщения;
 n_head = 4 # число голов
 n_layer = 1
@@ -33,10 +33,15 @@ batch_of_raw_graphs = torch.randn((batch_size, num_graphs, chat_size, chat_size)
 
 # data loading
 def get_batch(split):
+    torch.manual_seed(1337)
     # generate a small batch of data of inputs x and targets y
-    pass
+    batch_of_raw_message_embeddings = torch.randn((batch_size, chat_size, raw_embedding_size))
+    batch_of_raw_graphs = torch.randn((batch_size, num_graphs, chat_size, chat_size))
+    target = torch.randn(batch_size,chat_size)
     # предстоит написать!
-    return None
+    target = F.softmax(target,-1)
+    # print(batch_of_raw_message_embeddings, batch_of_raw_graphs,target)
+    return batch_of_raw_message_embeddings, batch_of_raw_graphs,target
 
 @torch.no_grad()
 def estimate_loss():
@@ -45,8 +50,8 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = get_batch(split)
-            logits, loss = model(X, Y)
+            brm, brg, targ = get_batch(split)
+            pred, loss = model(brm, brg, targ)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -98,7 +103,7 @@ class Zero_block(nn.Module):
             B,G,T,T = batch_of_links.shape
             free_heads_number = n_head - S - G
             # print(S,'S', G, 'G' , n_head, 'n head')
-            print('free_heads_number',free_heads_number)
+            # print('free_heads_number',free_heads_number)
             assert free_heads_number >= 0
             ones_for_matrices = torch.ones(B,free_heads_number,T,T)
 
@@ -121,7 +126,7 @@ class Head(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, adjacent=None):
-        print('x in Head shape', x.shape)
+        # print('x in Head shape', x.shape)
         B, T, C = x.shape
         if adjacent!=None:
             B,S,T,T = adjacent.shape
@@ -134,9 +139,9 @@ class Head(nn.Module):
 
 
         if adjacent!=None:
-            print('wei shape in the head', wei.shape)
+            # print('wei shape in the head', wei.shape)
             adjacent = adjacent.view(B, T, T)
-            print('adjacent shape in the head', adjacent.shape)
+            # print('adjacent shape in the head', adjacent.shape)
             wei = wei*adjacent # заменить на маскирование (графы авторов и формальных реплаев чисто нули и единицы)
         else:
             pass
@@ -162,8 +167,8 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x, adjacent = None):
 
         if adjacent!=None:
-            print('multihead adjacent shape', adjacent.shape)
-            print('multihead adjacent shape[:, 1, :, :]', adjacent[:, 0:1, :, :].shape)
+            # print('multihead adjacent shape', adjacent.shape)
+            # print('multihead adjacent shape[:, 1, :, :]', adjacent[:, 0:1, :, :].shape)
             out = torch.cat([self.heads[hi](x, adjacent[:, hi:hi+1, :, :]) for hi in range(self.num_heads)], dim=-1)
         else:
             out = torch.cat([h(x) for h in self.heads], dim=-1)
@@ -198,95 +203,95 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x, adjacent = None):
-        print('x shape at the start of the block 1', x.shape)
+        # print('x shape at the start of the block 1', x.shape)
         if adjacent==None:
-            print('adjacent None',adjacent)
+            # print('adjacent None',adjacent)
             x = x + self.sa(self.ln1(x))
             x = x + self.ffwd(self.ln2(x))
         else:
             x = x + self.sa(self.ln1(x), adjacent)
-            print('x chape at the block after sa', x.shape)
+            # print('x chape at the block after sa', x.shape)
             x = x + self.ffwd(self.ln2(x))
 
         return x
+
+class Final_block(nn.Module):
+    """ Принимает эмбеддинги сообщений, возвращает вектор длиной chat_size """
+    def __init__(self, n_embd):
+        super().__init__()
+        self.key = nn.Linear(n_embd, n_embd, bias=False)
+        self.query = nn.Linear(n_embd, n_embd, bias=False)
+        self.dropout = nn.Dropout(dropout)
+        self.ff = FeedFoward(chat_size)
+    def forward(self, x):
+        # print('Final layer!')
+        B,T,C = x.shape
+        k = self.key(x)  # (B,T,C)
+        q = self.query(x)  # (B,T,C)
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2, -1) * C ** -0.5  # (B, T, C) @ (B, C, T) -> (B, T, T)
+        wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        wei = self.dropout(wei)
+        out = self.ff(wei[:,-1,:])
+        return out
 
 class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.position_embedding_table = nn.Embedding(chat_size, n_embd)
         self.zero_block = Zero_block(number_of_semantic_matrixes, raw_embedding_size, n_embd)
-        # self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.block_1 = Block(n_embd,n_head)
         self.block_2 = Block(n_embd,n_head)
-        self.ln_f = nn.LayerNorm(n_embd) # final layer norm
+        self.final = Final_block(n_embd)
+        self.ln_f = nn.LayerNorm(chat_size) # final layer norm
         self.lm_head = nn.Linear(n_embd, output_size)
 
     def forward(self, raw_mes_embs, graph_adjacenties, targets=None):
-        """ New forward function takes batch of embngs, batch of adjacenties and true attention vector of last message as a target"""
+        """ New forward function takes batch of embngs, batch of adjacenties
+        and true attention vector of last message as a target"""
         B, G, T, T = graph_adjacenties.shape
         B, T, C = raw_mes_embs.shape
         # матрицы смежности и семантические матрицы из нулевого слоя:
         adjs, mes_embs = self.zero_block(raw_mes_embs, graph_adjacenties)
-
         # Подмешивание позиции:
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))  # (T,C)
         x = mes_embs + pos_emb  # (B,T,C)
-
         # засовываем в первый слой получившуюся пачку векторов:
         x = self.block_1(x, adjs)  # (B,T,C)
-
         # во второй слой входим без матриц смежности:
         x = self.block_2(x)
-
-
-        # x = self.ln_f(x)  # (B,T,C)
-        # logits = self.lm_head(x)  # (B,T,output_size)
-
-        # if targets is None:
-        #     loss = None
-        # else:
-        #     B, T, C = logits.shape
-        #     logits = logits.view(B * T, C)
-        #     targets = targets.view(B * T)
-        #     loss = F.cross_entropy(logits, targets)
-        #
-        # return logits, loss
-        return x
+        # финальный блок:
+        x = self.final(x)
+        x = self.ln_f(x) # (B,T)
+        if targets is None:
+             loss = None
+             print('===========================================')
+        else:
+            loss = F.cross_entropy(x, targets)
+        return x, loss
 
 
 model = BigramLanguageModel()
 m = model.to(device)
 print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
-
+'''
 r = m(batch_of_raw_message_embeddings,batch_of_raw_graphs)
 print('output of the block \n', r)
-print(r.shape)
+print(r[0].shape)
 '''
-model = BigramLanguageModel()
-m = model.to(device)
-# print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 for iter in range(max_iters):
-
     # every once in a while evaluate the loss on train and val sets
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-    # sample a batch of data
-    xb, yb = get_batch('train')
+    raw_embs, graph_adjs, target = get_batch('train')
 
-    # evaluate the loss
-    logits, loss = model(xb, yb)
+    predictions, loss = model(raw_embs, graph_adjs, target)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
-
-# generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=2000)[0].tolist()))
-'''
