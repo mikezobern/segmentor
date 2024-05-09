@@ -68,8 +68,9 @@ class Zero_block(nn.Module):
         self.head_size = message_embedding_size
         # Единая матрица преобразования для всех семантических проекций пайторч-стиле:
         self.linear = torch.nn.Linear(raw_embedding_size, number_of_semantic_matrixes * message_embedding_size)
-        print('zero block linear', self.linear.parameters())
-    def forward(self, batch_of_text_embeddings):
+        self.linear_2 = torch.nn.Linear(raw_embedding_size, message_embedding_size)
+
+    def forward(self, batch_of_text_embeddings, batch_of_links = None):
         B, T, C = batch_of_text_embeddings.shape
         # Получив батчи с сырыми текст-эмбеддингами, преобразуем их в эмбеддинги размера голов:
         ln = self.linear(batch_of_text_embeddings)
@@ -85,12 +86,24 @@ class Zero_block(nn.Module):
         intl_rep = btsc.repeat_interleave(T, dim = 1) # B T**T S C
         # Шаг #3: вычисляем евклидову меру
         s = torch.sum((srep - intl_rep)**2, -1)**0.5 # B T**T S C/C
-        s_reshaped = s.transpose(-2, -1).view(B, S, T, T) # B S T T
-        return s_reshaped
+        s_reshaped = - s.transpose(-2, -1).view(B, S, T, T)  # B S T T
+        s_reshaped = F.softmax(s_reshaped,-1)
+
+        # Теперь получаем эмбеддинги нод из сырых эмбеддингов
+        message_embeddings = self.linear_2(batch_of_text_embeddings)
+        # Здесь, возможно, понадобится нормализация  свежесозданных семантических эмбеддингов
+        pass
+
+        adj_matrices = None
+        if batch_of_links!=None:
+            # Объединяем пачки матриц смежности графов с пачками семантического внимания (B G T T)
+            adj_matrices = torch.cat([s_reshaped, batch_of_links], dim=1)
+
+        return adj_matrices, message_embeddings
 
 class Head(nn.Module):
-    """ one head of self-attention """
 
+    """ one head of self-attention """
     def __init__(self, head_size):
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
@@ -115,6 +128,36 @@ class Head(nn.Module):
         return out
 
 
+class Head_with_adjacent(nn.Module):
+    """ one head of self-attention """
+
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, adjacent):
+        B, T, C = x.shape
+        k = self.key(x)  # (B,T,C)
+        q = self.query(x)  # (B,T,C)
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2, -1) * C ** -0.5  # (B, T, C) @ (B, C, T) -> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B, T, T)
+
+        wei = wei*adjacent
+
+        wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        wei = self.dropout(wei)
+        # perform the weighted aggregation of the values
+        v = self.value(x)  # (B,T,C)
+        out = wei @ v  # (B, T, T) @ (B, T, C) -> (B, T, C)
+        return out
+
+
 class MultiHeadAttention(nn.Module):
     """ multiple heads of self-attention in parallel """
 
@@ -128,7 +171,6 @@ class MultiHeadAttention(nn.Module):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.dropout(self.proj(out))
         return out
-
 class FeedFoward(nn.Module):
     """ a simple linear layer followed by a non-linearity """
 
@@ -143,7 +185,6 @@ class FeedFoward(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
 class Block(nn.Module):
     """ Transformer block: communication followed by computation """
 
@@ -160,7 +201,6 @@ class Block(nn.Module):
         x = x + self.sa(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
         return x
-
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
     def __init__(self):
