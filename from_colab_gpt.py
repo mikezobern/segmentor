@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-torch.manual_seed(1337)
+torch.manual_seed(1338)
 
 # hyperparameters
 chat_size = 10 # number of messages
-max_iters = 2000
+max_iters = 100
 eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -20,23 +20,18 @@ num_graphs = 1 # formal reply graph, author graph
 heads_for_each_semantic = 1 # сколько голов отдаётся каждой семантической матрице
 free_heads = 3 # Число голов без входящих графов
 
-raw_embedding_size = 1000  # number of chosen test embedding dimentions
+raw_embedding_size = 3  # number of chosen test embedding dimentions
 output_size = chat_size
 batch_size = 3
 
-# ------------
-# ------------
-batch_of_raw_message_embeddings = torch.randn((batch_size, chat_size, raw_embedding_size))
-batch_of_raw_graphs = torch.randn((batch_size, num_graphs, chat_size, chat_size))
-# ------------
-# ------------
 
 # data loading
 def get_batch(split):
     torch.manual_seed(1337)
     # generate a small batch of data of inputs x and targets y
     batch_of_raw_message_embeddings = torch.randn((batch_size, chat_size, raw_embedding_size))
-    batch_of_raw_message_embeddings = F.softmax(batch_of_raw_message_embeddings,-1)
+
+    # batch_of_raw_message_embeddings = F.softmax(batch_of_raw_message_embeddings,-1)
     batch_of_raw_graphs = torch.randn((batch_size, num_graphs, chat_size, chat_size))
     batch_of_raw_graphs = F.softmax(batch_of_raw_graphs,-1)
     target = torch.randn(batch_size,chat_size)
@@ -87,9 +82,10 @@ class Zero_block(nn.Module):
         # Шаг #2: копируем содержание нод T раз, но повторяясь внутри T-измерения:
         intl_rep = btsc.repeat_interleave(T, dim = 1) # B T**T S C
         # Шаг #3: вычисляем евклидову меру
-        s = torch.sum((srep - intl_rep)**2, -1)**0.5 # B T**T S C/C
+        s = torch.sum((srep - intl_rep)**2 + 1e-4, -1)**0.5 # B T**T S C/C
         s_reshaped = - s.transpose(-2, -1).view(B, S, T, T)  # B S T T
-        s_reshaped = s_reshaped.clone().detach()
+        # s_reshaped = F.softmax(s_reshaped,-1)
+        # s_reshaped = s_reshaped.clone().detach()
         # print('s_reshaped',s_reshaped)
         # Теперь получаем эмбеддинги нод из сырых эмбеддингов
         message_embeddings = self.linear_2(batch_of_text_embeddings)
@@ -246,7 +242,7 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = nn.Embedding(chat_size, n_embd)
         self.zero_block = Zero_block(number_of_semantic_matrixes, raw_embedding_size, n_embd)
         self.block_1 = Block(n_embd,n_head)
-        # self.block_2 = Block(n_embd,n_head)
+        self.block_2 = Block(n_embd,n_head)
         self.final = Final_block(n_embd)
         self.ln_f = nn.LayerNorm(chat_size) # final layer norm
         self.lm_head = nn.Linear(n_embd, output_size)
@@ -267,7 +263,7 @@ class BigramLanguageModel(nn.Module):
         x = self.block_1(x, adjs)  # (B,T,C) ВЗРЫВ ГРАДИЕНТА
         # print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\n\n', x, '\n\n\n\n\n')
         # во второй слой входим без матриц смежности:
-        # x = self.block_2(x)
+        x = self.block_2(x)
         # финальный блок:
         x = self.final(x)
         x = self.ln_f(x) # (B,T)
