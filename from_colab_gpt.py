@@ -4,26 +4,24 @@ from torch.nn import functional as F
 torch.manual_seed(1338)
 
 # hyperparameters
-chat_size = 10 # number of messages
-max_iters = 2500
+chat_size = 5 # number of messages
+max_iters = 10000
 eval_interval = 100
-learning_rate = 1e-4
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 1
-n_embd = 50 # ME, внутренний эмбеддинг сообщения;
-n_head = 5 # число голов
+n_embd = 100 # ME, внутренний эмбеддинг сообщения;
+n_head = 10 # число голов
 dropout = 0.0
-
-
 # ------------
-number_of_semantic_matrixes = 2
+number_of_semantic_matrixes = 1 # сколько делаем матриц "искусственного винмания" на основе эмбеддингов
+semantic_embedding_size = 50
 num_graphs = 1 # formal reply graph, author graph
-heads_for_each_semantic = 1 # сколько голов отдаётся каждой семантической матрице
-free_heads = 3 # Число голов без входящих графов
-
-raw_embedding_size = 200  # number of chosen test embedding dimentions
+# ------------
+raw_embedding_size = 100  # number of chosen test embedding dimentions
 batch_size = 1
-
+# ------------
+# ------------
 
 # data loading
 def get_batch(split):
@@ -32,7 +30,7 @@ def get_batch(split):
     batch_of_raw_message_embeddings = torch.randn((batch_size, chat_size, raw_embedding_size))
     # batch_of_raw_message_embeddings = F.softmax(batch_of_raw_message_embeddings,-1)
     batch_of_raw_graphs = torch.randn((batch_size, num_graphs, chat_size, chat_size))
-    batch_of_raw_graphs = F.softmax(batch_of_raw_graphs,-1)
+    # batch_of_raw_graphs = F.softmax(batch_of_raw_graphs,-1)
     target = torch.randn(batch_size,chat_size)
     # предстоит написать!
     target = F.softmax(target,-1)
@@ -59,17 +57,16 @@ class Zero_block(nn.Module):
         super().__init__()
         self.number_of_semantic_matrixes = number_of_semantic_matrixes
         self.head_size = message_embedding_size
-        # Единая матрица преобразования для всех семантических проекций пайторч-стиле:
-        self.linear = torch.nn.Linear(raw_embedding_size, number_of_semantic_matrixes * message_embedding_size)
-        # torch.nn.init.xavier_normal_(self.linear.weight) # ухудшило сходимость
+        # Единая матрица преобразования для всех number_of_semantic_matrixes семантических проекций пайторч-стиле:
+        self.linear = torch.nn.Linear(raw_embedding_size, number_of_semantic_matrixes * semantic_embedding_size)
         self.linear_2 = torch.nn.Linear(raw_embedding_size, message_embedding_size)
-        # torch.nn.init.xavier_normal_(self.linear_2.weight) # ухудшило сходимость
     def forward(self, batch_of_text_embeddings, batch_of_links = None):
         """ Размер пачки эмбеддингов (B T Cr) """
         B, T, C = batch_of_text_embeddings.shape
-        # Получив батчи с сырыми текст-эмбеддингами, преобразуем их в эмбеддинги размера голов:
+
+        # Получив батчи с сырыми текст-эмбеддингами, преобразуем их в эмбеддинги размера semantic_embedding_size:
         ln = self.linear(batch_of_text_embeddings)
-        btsc = ln.view(B, T, self.number_of_semantic_matrixes, self.head_size)
+        btsc = ln.view(B, T, self.number_of_semantic_matrixes, semantic_embedding_size)
         # Здесь, возможно, понадобится нормализация
         pass
         # Запоминаем форму тензора:
@@ -80,9 +77,10 @@ class Zero_block(nn.Module):
         # Шаг #2: копируем содержание нод T раз, но повторяясь внутри T-измерения:
         intl_rep = btsc.repeat_interleave(T, dim = 1) # B T**T S C
         # Шаг #3: вычисляем евклидову меру
-        s = torch.sum((srep - intl_rep)**2 + 1e-3, -1)**0.5 # B T**T S C/C
+        s = torch.sum((srep - intl_rep)**2 + 1e-3, -1)**0.5 # B T**T S C/C # 1e-3->1.6743; 1e-4->2.6743
         s_reshaped = - s.transpose(-2, -1).view(B, S, T, T)  # B S T T
         s_reshaped = F.softmax(s_reshaped,-1)
+
         # Теперь получаем эмбеддинги нод из сырых эмбеддингов
         message_embeddings = self.linear_2(batch_of_text_embeddings)
         # Здесь, возможно, понадобится нормализация
@@ -183,9 +181,26 @@ class FeedFoward(nn.Module):
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(dropout),
         )
+    def forward(self, x):
+        return self.net(x)
+
+class FinalFeedFoward(nn.Module):
+    """ a simple linear layer followed by a non-linearity """
+
+    def __init__(self, chat_size):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(chat_size**2, chat_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(chat_size, chat_size),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
 
     def forward(self, x):
         return self.net(x)
+
 class Block(nn.Module):
     """ Transformer block: communication followed by computation
         Возвращает в любом случа пока только лишь эмбеддинги нод, adja не отдаёт"""
@@ -219,17 +234,25 @@ class Final_block(nn.Module):
         self.key = nn.Linear(n_embd, n_embd, bias=False)
         self.query = nn.Linear(n_embd, n_embd, bias=False)
         self.dropout = nn.Dropout(dropout)
-        self.ff = FeedFoward(chat_size)
+        self.fff = FinalFeedFoward(chat_size)
+        self.layer_norm_1 = nn.LayerNorm((chat_size,chat_size)) # дописать нормализацию
+        self.layer_norm_2 = nn.LayerNorm(chat_size)
     def forward(self, x):
         # print('Final layer!')
-        B,T,C = x.shape
+        B, T, C = x.shape
         k = self.key(x)  # (B,T,C)
         q = self.query(x)  # (B,T,C)
+        # print(q)
         # compute attention scores ("affinities")
         wei = q @ k.transpose(-2, -1) * C ** -0.5  # (B, T, C) @ (B, C, T) -> (B, T, T)
         wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        wei = self.layer_norm_1(wei)
         wei = self.dropout(wei)
-        out = self.ff(wei[:,-1,:])
+
+        out = self.fff(wei.view(B, T*T))
+        out = self.layer_norm_2(out)
+        out = F.softmax(out, dim = -1)
+
         return out
 
 class BigramLanguageModel(nn.Module):
@@ -239,9 +262,7 @@ class BigramLanguageModel(nn.Module):
         self.zero_block = Zero_block(number_of_semantic_matrixes, raw_embedding_size, n_embd)
         self.block_1 = Block(n_embd,n_head)
         self.block_2 = Block(n_embd,n_head)
-        self.final = Final_block(n_embd)
-        self.ln_f = nn.LayerNorm(chat_size) # final layer norm
-        self.lm_head = nn.Linear(n_embd, chat_size)
+        self.final_block = Final_block(n_embd)
 
     def forward(self, raw_mes_embs, graph_adjacenties, targets=None):
         """ New forward function takes batch of embngs, batch of adjacenties
@@ -256,18 +277,19 @@ class BigramLanguageModel(nn.Module):
 
         # засовываем в первый слой получившуюся пачку векторов:
 
-        x = self.block_1(x, adjs)  # (B,T,C) ВЗРЫВ ГРАДИЕНТА
+        x = self.block_1(x, adjs)  # (B,T,C)
         # print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\n\n', x, '\n\n\n\n\n')
         # во второй слой входим без матриц смежности:
-        x = self.block_2(x)
+        # x = self.block_2(x)
         # финальный блок:
-        x = self.final(x)
-        x = self.ln_f(x) # (B,T)
+        x = self.final_block(x)
+
         if targets is None:
              loss = None
              print('===========================================')
         else:
-            loss = F.cross_entropy(x, targets)
+            loss = F.mse_loss(x, targets)
+            # loss = F.cross_entropy(x, targets)
         return x, loss
 
 
@@ -294,7 +316,7 @@ for iter in range(max_iters):
 
     raw_embs, graph_adjs, target = get_batch('train')
     predictions, loss = model(raw_embs, graph_adjs, target)
-    # print('loss', loss.item(), 'pred', predictions)
+    print('loss', loss.item(), 'pred', predictions, 'target', target)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
