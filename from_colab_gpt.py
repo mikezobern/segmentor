@@ -5,24 +5,24 @@ torch.manual_seed(1338)
 
 # hyperparameters
 chat_size = 10 # number of messages
-max_iters = 100
+max_iters = 2500
 eval_interval = 100
-learning_rate = 1e-3
+learning_rate = 1e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 1
-n_embd = 100 # ME, внутренний эмбеддинг сообщения;
-n_head = 10 # число голов
-n_layer = 1
+n_embd = 50 # ME, внутренний эмбеддинг сообщения;
+n_head = 5 # число голов
 dropout = 0.0
+
+
 # ------------
-number_of_semantic_matrixes = 1
+number_of_semantic_matrixes = 2
 num_graphs = 1 # formal reply graph, author graph
 heads_for_each_semantic = 1 # сколько голов отдаётся каждой семантической матрице
 free_heads = 3 # Число голов без входящих графов
 
-raw_embedding_size = 3  # number of chosen test embedding dimentions
-output_size = chat_size
-batch_size = 3
+raw_embedding_size = 200  # number of chosen test embedding dimentions
+batch_size = 1
 
 
 # data loading
@@ -30,15 +30,12 @@ def get_batch(split):
     torch.manual_seed(1337)
     # generate a small batch of data of inputs x and targets y
     batch_of_raw_message_embeddings = torch.randn((batch_size, chat_size, raw_embedding_size))
-
     # batch_of_raw_message_embeddings = F.softmax(batch_of_raw_message_embeddings,-1)
     batch_of_raw_graphs = torch.randn((batch_size, num_graphs, chat_size, chat_size))
     batch_of_raw_graphs = F.softmax(batch_of_raw_graphs,-1)
     target = torch.randn(batch_size,chat_size)
     # предстоит написать!
     target = F.softmax(target,-1)
-
-    # print(batch_of_raw_message_embeddings, batch_of_raw_graphs,target)
     return batch_of_raw_message_embeddings, batch_of_raw_graphs, target
 
 @torch.no_grad()
@@ -64,8 +61,9 @@ class Zero_block(nn.Module):
         self.head_size = message_embedding_size
         # Единая матрица преобразования для всех семантических проекций пайторч-стиле:
         self.linear = torch.nn.Linear(raw_embedding_size, number_of_semantic_matrixes * message_embedding_size)
+        # torch.nn.init.xavier_normal_(self.linear.weight) # ухудшило сходимость
         self.linear_2 = torch.nn.Linear(raw_embedding_size, message_embedding_size)
-
+        # torch.nn.init.xavier_normal_(self.linear_2.weight) # ухудшило сходимость
     def forward(self, batch_of_text_embeddings, batch_of_links = None):
         """ Размер пачки эмбеддингов (B T Cr) """
         B, T, C = batch_of_text_embeddings.shape
@@ -82,11 +80,9 @@ class Zero_block(nn.Module):
         # Шаг #2: копируем содержание нод T раз, но повторяясь внутри T-измерения:
         intl_rep = btsc.repeat_interleave(T, dim = 1) # B T**T S C
         # Шаг #3: вычисляем евклидову меру
-        s = torch.sum((srep - intl_rep)**2 + 1e-4, -1)**0.5 # B T**T S C/C
+        s = torch.sum((srep - intl_rep)**2 + 1e-3, -1)**0.5 # B T**T S C/C
         s_reshaped = - s.transpose(-2, -1).view(B, S, T, T)  # B S T T
-        # s_reshaped = F.softmax(s_reshaped,-1)
-        # s_reshaped = s_reshaped.clone().detach()
-        # print('s_reshaped',s_reshaped)
+        s_reshaped = F.softmax(s_reshaped,-1)
         # Теперь получаем эмбеддинги нод из сырых эмбеддингов
         message_embeddings = self.linear_2(batch_of_text_embeddings)
         # Здесь, возможно, понадобится нормализация
@@ -245,7 +241,7 @@ class BigramLanguageModel(nn.Module):
         self.block_2 = Block(n_embd,n_head)
         self.final = Final_block(n_embd)
         self.ln_f = nn.LayerNorm(chat_size) # final layer norm
-        self.lm_head = nn.Linear(n_embd, output_size)
+        self.lm_head = nn.Linear(n_embd, chat_size)
 
     def forward(self, raw_mes_embs, graph_adjacenties, targets=None):
         """ New forward function takes batch of embngs, batch of adjacenties
@@ -289,18 +285,16 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 
 for iter in range(max_iters):
-    print('iteration',iter)
-    '''
+    # print('iteration',iter)
     # every once in a while evaluate the loss on train and val sets
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
         # print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         print(f"step {iter}: train loss {losses['train']:.4f}")
-    '''
-    raw_embs, graph_adjs, target = get_batch('train')
 
+    raw_embs, graph_adjs, target = get_batch('train')
     predictions, loss = model(raw_embs, graph_adjs, target)
-    print(loss.item())
+    # print('loss', loss.item(), 'pred', predictions)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
