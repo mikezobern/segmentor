@@ -4,8 +4,8 @@ from torch.nn import functional as F
 torch.manual_seed(1338)
 
 # hyperparameters
-chat_size = 5 # number of messages
-max_iters = 10000
+chat_size = 50 # number of messages
+max_iters = 7501
 eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -14,12 +14,12 @@ n_embd = 100 # ME, внутренний эмбеддинг сообщения;
 n_head = 10 # число голов
 dropout = 0.0
 # ------------
-number_of_semantic_matrixes = 1 # сколько делаем матриц "искусственного винмания" на основе эмбеддингов
-semantic_embedding_size = 50
+number_of_semantic_matrixes = 2 # сколько делаем матриц "искусственного винмания" на основе эмбеддингов
+semantic_embedding_size = 100
 num_graphs = 1 # formal reply graph, author graph
 # ------------
-raw_embedding_size = 100  # number of chosen test embedding dimentions
-batch_size = 1
+raw_embedding_size = 500  # number of chosen test embedding dimentions
+batch_size = 2
 # ------------
 # ------------
 
@@ -288,7 +288,7 @@ class BigramLanguageModel(nn.Module):
              loss = None
              print('===========================================')
         else:
-            loss = F.mse_loss(x, targets)
+            loss = F.mse_loss(x, targets) #+ F.cross_entropy(x, targets)/10
             # loss = F.cross_entropy(x, targets)
         return x, loss
 
@@ -316,7 +316,7 @@ for iter in range(max_iters):
 
     raw_embs, graph_adjs, target = get_batch('train')
     predictions, loss = model(raw_embs, graph_adjs, target)
-    print('loss', loss.item(), 'pred', predictions, 'target', target)
+    # print('loss', loss.item(), 'pred', predictions, 'target', target)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
