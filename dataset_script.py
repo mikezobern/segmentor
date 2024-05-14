@@ -216,4 +216,34 @@ for mes_class in class_sizes_dict:
 print('train_list_size', len(train_list))
 
 # отлично, теперь можно семплировать из трейнлиста сбалансироваые по классу обучающие данные!
-#
+# Можно, наконец, написать функцию получения пачки эмбеддингов по номеру сообщения.
+# Первый шаг: получить эмбеддинги шести сообщений, предшествующих данному. Только эмбеддинги и больше ничего.
+row_mes_num = train_list[50000][0]
+print('rpw_mes_numb',len(train_list))
+
+def get_bunch_of_embs_by_row_id(row_mes_num):
+    """ Возвращает эмбеддинги (список списков) и класс родителя """
+    res = cursor.execute(f'SELECT distance_to_parent, jsoned_embedding FROM {l_45_t} WHERE row_id<={row_mes_num} AND row_id>{row_mes_num-chat_messages}')
+    res = res.fetchall()
+
+    embedding_list = []
+
+    # Список эмбеддингов (последний — от сообщения)
+    for i in res:
+        emb_l = json.loads(i[1])
+        embedding_list.append(emb_l)
+    # print(len(embedding_list))
+    # Граф формальных связей:
+    pass # тут будет получение графа формальных связей
+    pass # тут будет получение графа авторов
+    pass # тут будет получение графа времени
+
+    print('res[-1][0]',res[-1][0])
+    parent_class = int(res[-1][0])*(chat_messages > int(res[-1][0]))
+    return embedding_list, parent_class
+
+print('sdg',get_bunch_of_embs_by_row_id(row_mes_num)[1])
+
+# Следующий шаг — сериализоть [класс родителя, [ [эмбеддинг1],[...2],[...3],[...4]...]
+# И сделать csv-файл на 82к строк.
+
