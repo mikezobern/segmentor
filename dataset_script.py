@@ -4,6 +4,7 @@ import os
 import torch
 import sqlite3
 import json
+import random
 
 
 # Подключаемся к патрикеевской патрикеевской базе данных
@@ -154,9 +155,41 @@ print(get_embedding(text_to_emb)[:50])
 
 '''
 
-# Пишем функцию получения эмбеддинга -- на выходе сериализованный json
+# Получаем обучающий пример
+
+# res = cursor.execute(f'SELECT max(row_id) FROM {l_45_t}')
+# res = res.fetchone()[0]
+# print(res)
+#
+# all_with_parent = cursor.execute(f'''SELECT count(row_id) FROM {l_45_t} WHERE distance_to_parent IS NULL ''')
+# all_with_parent = all_with_parent.fetchall()
+# print('all_with_parent', all_with_parent)
+
+# Как мне получить обучающую пару с заданным классом родитея?
+# Очевидно, надо сначала сделать выборку по классу родителя, а затем из неё сделать случайный выбор сообщения.
+chat_messages = 6
+class_sizes_dict = {}
+'''
+for i in range(1, chat_messages):
+    parent_class = str(i)
+    candidates = cursor.execute(f'SELECT count(row_id) FROM {l_45_t} WHERE distance_to_parent IS {parent_class} ')
+    candidates = candidates.fetchall()
+    print(candidates)
+'''
+candidates_0 = cursor.execute(f'SELECT count(row_id) FROM {l_45_t} WHERE distance_to_parent>={chat_messages} ')
+candidates_0 = candidates_0.fetchall()
+print(0, '\t', candidates_0[0][0])
+class_sizes_dict[0] = candidates_0[0][0]
 
 
-# Сохраняем в csv-файл все сообщения, упорядоченные по времени
+for i in range(1,chat_messages):
+    candidates = cursor.execute(f'SELECT count(row_id) FROM {l_45_t} WHERE distance_to_parent={i} ')
+    candidates = candidates.fetchall()
+    print(i, '\t', candidates[0][0])
+    class_sizes_dict[i] = candidates[0][0]
 
-# Открываем файл и получаем оттуда готовый батч
+print(class_sizes_dict)
+print('Среднее значение ',sum([class_sizes_dict[i] for i in class_sizes_dict if i>0])/(chat_messages-1))
+
+# Теперь для каждого класса создаём собственный список айдишников сообщений: всего 6 наборов айдишников
+# затем я увеличу каждый набор до размера самого большого набора, после чего объединю их — и буду доставать рандомы из этого набора!
