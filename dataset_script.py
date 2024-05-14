@@ -1,5 +1,5 @@
 """ Скрипт для получения датасета """
-from get_embedding import get_embedding_batch
+from get_embedding import get_embedding_batch, get_embedding
 import os
 import torch
 import sqlite3
@@ -70,7 +70,7 @@ for i in r:
 # Таблица деревье с расстояниями до родителей получена -- теперь нужно для каждого сообщения добавить текст-эмбеддинг
 # Перебираем все сообщения:
 
-
+'''
 l_w = 'lixiangautorussia_raw'
 l_45_t = 'lixiangautorussia_45_trees'
 cursor.execute(f"PRAGMA table_info({l_w});")
@@ -91,14 +91,15 @@ for i in res:
 print('len(null_embs)', len(null_embs))
 # теперь наполняем буферный словарь
 
-emb_batch_size = 2
+emb_batch_size = 1000
 buffer = []
 
 cc = 0
-while null_embs and cc<10:
+msg_tot = 0
+while null_embs and cc<100:
     position = min(emb_batch_size, len(null_embs))
     batch_to_add, null_embs = null_embs[:position], null_embs[position:]
-    print('batch_to_add', batch_to_add)
+    # print('batch_to_add', batch_to_add)
 
     # Теперь составляем словарь buffer_dict
     buffer_dict = {}
@@ -120,26 +121,37 @@ while null_embs and cc<10:
     for mes_id in buffer_dict:
         text_batch.append(buffer_dict[mes_id])
         mes_ids.append(mes_id)
+    print(f'Запрос {len(mes_ids)} эмбеддингов батча {cc} у openai')
     embs_batch = get_embedding_batch(text_batch)
 
     # теперь добавляем эти эмбеддинги в базу
-    print(f'Добавление эмбеддингов батча {cc} в базу')
+    print(f'Добавление эмбеддингов батча {cc} в базу...')
     for i in range(len(mes_ids)):
+        msg_tot+=1
+        # print(f'Сообщение #{msg_tot}, id ={mes_ids[i]}')
         jsond = json.dumps(embs_batch[i])
-        cursor.execute(f"UPDATE {l_45_t} SET jsoned_embedding = {jsond} WHERE message_id = {mes_ids[i]}")
+        cursor.execute(f"UPDATE {l_45_t} SET jsoned_embedding = '{jsond}' WHERE message_id = {mes_ids[i]}")
         conn.commit()
     cc+=1
 
 
 '''
-r = cursor.execute(f'SELECT * FROM {l_45_t}')
-r = r.fetchall()
-c = 0
-for i in r:
-    print(i[-1][:20])
-    if c>=10:
-        break
-    c += 1
+# Теперь проверка: выводим случайное сообщение из базы
+'''
+r = cursor.execute(f'SELECT * FROM {l_45_t} WHERE row_id = 25000')
+r = r.fetchone()
+print(r[0],r[9][:50])
+
+
+res = cursor.execute(f'SELECT * FROM {l_w} WHERE message_id = 203610')
+res = res.fetchone()
+author = str(res[10])*(res[10]!=None) + str(res[11])*(res[11]!=None) + str(res[12])*(res[12]!=None)
+if author == '':
+    author = 'Аноним'
+text = str(res[4]) * (res[4] != None) + str(res[7]) * (res[7] != None)
+text_to_emb = 'Автор сообщения: ' + author + '\n' + text
+print(get_embedding(text_to_emb)[:50])
+
 '''
 
 # Пишем функцию получения эмбеддинга -- на выходе сериализованный json
