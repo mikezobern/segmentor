@@ -192,4 +192,28 @@ print(class_sizes_dict)
 print('Среднее значение ',sum([class_sizes_dict[i] for i in class_sizes_dict if i>0])/(chat_messages-1))
 
 # Теперь для каждого класса создаём собственный список айдишников сообщений: всего 6 наборов айдишников
+ids_by_parent_dict = {}
+ids_0 = cursor.execute(f'SELECT row_id FROM {l_45_t} WHERE distance_to_parent>={chat_messages} ')
+candidates_0 = ids_0.fetchall()
+ids_by_parent_dict[0] = candidates_0
+for i in range(1, chat_messages):
+    candidates = cursor.execute(f'SELECT row_id FROM {l_45_t} WHERE distance_to_parent={i} ')
+    candidates = candidates.fetchall()
+    ids_by_parent_dict[i] = candidates
+
+# print(ids_by_parent_dict)
 # затем я увеличу каждый набор до размера самого большого набора, после чего объединю их — и буду доставать рандомы из этого набора!
+# Мелкие листы просто дублируем N раз
+max_class = max([class_sizes_dict[i] for i in class_sizes_dict])
+print('max_class', max_class)
+train_list = []
+for mes_class in class_sizes_dict:
+    class_size = class_sizes_dict[mes_class]
+    koef = max_class/class_size
+    list_of_ids = ids_by_parent_dict[mes_class]
+    new_list = list_of_ids*int(koef) + list_of_ids[ :int((koef-int(koef))*class_size)]
+    train_list+=new_list
+print('train_list_size', len(train_list))
+
+# отлично, теперь можно семплировать из трейнлиста сбалансироваые по классу обучающие данные!
+#
