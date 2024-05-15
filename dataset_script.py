@@ -221,7 +221,7 @@ print('train_list_size', len(train_list))
 row_mes_num = train_list[50000][0]
 print('rpw_mes_numb',len(train_list))
 
-def get_bunch_of_embs_by_row_id(row_mes_num):
+def get_bunch_of_embs_by_row_id(row_mes_num, chat_messages):
     """ Возвращает эмбеддинги (список списков) и класс родителя """
     res = cursor.execute(f'SELECT distance_to_parent, jsoned_embedding FROM {l_45_t} WHERE row_id<={row_mes_num} AND row_id>{row_mes_num-chat_messages}')
     res = res.fetchall()
@@ -238,12 +238,36 @@ def get_bunch_of_embs_by_row_id(row_mes_num):
     pass # тут будет получение графа авторов
     pass # тут будет получение графа времени
 
-    print('res[-1][0]',res[-1][0])
+    # print('res[-1][0]',res[-1][0])
     parent_class = int(res[-1][0])*(chat_messages > int(res[-1][0]))
     return embedding_list, parent_class
 
-print('sdg',get_bunch_of_embs_by_row_id(row_mes_num)[1])
+# print('sdg',get_bunch_of_embs_by_row_id(row_mes_num)[1])
 
 # Следующий шаг — сериализоть [класс родителя, [ [эмбеддинг1],[...2],[...3],[...4]...]
 # И сделать csv-файл на 82к строк.
+'''
+import csv
 
+# Имя CSV-файла
+filename = 'simple_6.csv'
+
+# Открываем файл для записи, создавая его, если он не существует
+with open(filename, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    # Записываем данные в CSV-файл
+    c = 0
+    for i in train_list:
+
+        if c%10==0:
+            print(c)
+        c += 1
+        row_mes_num = i[0]
+        # print('row_mes_num',row_mes_num)
+        embedding_list, parent_class = get_bunch_of_embs_by_row_id(row_mes_num)
+        writer.writerow([parent_class,embedding_list])
+
+print(f'Данные успешно записаны в файл "{filename}"')
+'''
+
+# Хотя лучше просто сделать функцию, которая делает батчи на лету! 16 Гб это слишком много.
