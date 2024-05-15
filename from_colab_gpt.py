@@ -3,28 +3,33 @@ import torch.nn as nn
 from torch.nn import functional as F
 torch.manual_seed(1338)
 
+
+
 # hyperparameters
-chat_size = 50 # number of messages
-max_iters = 7501
-eval_interval = 100
+chat_size = 6 # number of messages
+from get_batch import Train_data
+td = Train_data(chat_size)
+
+max_iters = 5
+eval_interval = 1
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 1
+eval_iters = 10
 n_embd = 100 # ME, внутренний эмбеддинг сообщения;
-n_head = 10 # число голов
+n_head = 5 # число голов
 dropout = 0.0
 # ------------
 number_of_semantic_matrixes = 2 # сколько делаем матриц "искусственного винмания" на основе эмбеддингов
 semantic_embedding_size = 100
 num_graphs = 1 # formal reply graph, author graph
 # ------------
-raw_embedding_size = 500  # number of chosen test embedding dimentions
+raw_embedding_size = 1536  # number of chosen test embedding dimentions
 batch_size = 2
 # ------------
 # ------------
 
 # data loading
-def get_batch(split):
+def get_batch_old(split):
     torch.manual_seed(1337)
     # generate a small batch of data of inputs x and targets y
     batch_of_raw_message_embeddings = torch.randn((batch_size, chat_size, raw_embedding_size))
@@ -35,6 +40,14 @@ def get_batch(split):
     # предстоит написать!
     target = F.softmax(target,-1)
     return batch_of_raw_message_embeddings, batch_of_raw_graphs, target
+
+def get_batch(split):
+    t_e, t_t = td.get_batch(batch_size)
+    b_g = torch.ones((batch_size, num_graphs, chat_size, chat_size))
+    print('bg_shape', b_g.shape)
+    return t_e, t_t, b_g
+
+
 
 @torch.no_grad()
 def estimate_loss():

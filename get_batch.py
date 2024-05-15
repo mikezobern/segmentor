@@ -115,7 +115,8 @@ class Train_data():
         print('Среднее значение ', sum([class_sizes_dict[i] for i in class_sizes_dict if i > 0]) / (chat_messages - 1))
         self.class_sizes_dict = class_sizes_dict
 
-# td = Train_data(6)
-#
-# for i in range(10):
-#     print(td.get_batch(5))
+td = Train_data(6)
+
+
+# t = td.get_batch(5)[0][0][0]
+# print(t.shape)
