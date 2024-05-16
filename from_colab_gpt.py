@@ -10,25 +10,26 @@ chat_size = 6 # number of messages
 from get_batch import Train_data
 td = Train_data(chat_size)
 
-max_iters = 5
-eval_interval = 1
+max_iters = 1000000
+eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 10
-n_embd = 100 # ME, внутренний эмбеддинг сообщения;
-n_head = 5 # число голов
+eval_iters = 20
+n_embd = 80 # ME, внутренний эмбеддинг сообщения;
+n_head = 10 # число голов
 dropout = 0.0
 # ------------
-number_of_semantic_matrixes = 2 # сколько делаем матриц "искусственного винмания" на основе эмбеддингов
-semantic_embedding_size = 100
+number_of_semantic_matrixes = 8 # сколько делаем матриц "искусственного винмания" на основе эмбеддингов
+semantic_embedding_size = 50
 num_graphs = 1 # formal reply graph, author graph
 # ------------
 raw_embedding_size = 1536  # number of chosen test embedding dimentions
-batch_size = 2
+batch_size = 1
 # ------------
 # ------------
 
 # data loading
+'''
 def get_batch_old(split):
     torch.manual_seed(1337)
     # generate a small batch of data of inputs x and targets y
@@ -40,12 +41,15 @@ def get_batch_old(split):
     # предстоит написать!
     target = F.softmax(target,-1)
     return batch_of_raw_message_embeddings, batch_of_raw_graphs, target
-
-def get_batch(split):
+'''
+def get_batch_f(split):
+    # print('/iuliuhliuh, ', batch_size)
     t_e, t_t = td.get_batch(batch_size)
-    b_g = torch.ones((batch_size, num_graphs, chat_size, chat_size))
-    print('bg_shape', b_g.shape)
-    return t_e, t_t, b_g
+    b_g = torch.ones((batch_size, num_graphs, chat_size, chat_size), dtype=torch.long)
+    B,T,C = t_e.shape
+    if B!=batch_size:
+        print('B,T,C')
+    return t_e, b_g, t_t
 
 
 
@@ -55,13 +59,20 @@ def estimate_loss():
     model.eval()
     for split in ['train']: # 'val'
         losses = torch.zeros(eval_iters)
+        accura = 0
         for k in range(eval_iters):
-            brm, brg, targ = get_batch(split)
+
+            brm, brg, targ = get_batch_f(split)
+
             pred, loss = model(brm, brg, targ)
             losses[k] = loss.item()
+
+            if torch.argmax(targ)==torch.argmax(pred):
+                accura+=1
+        accura = accura/eval_iters
         out[split] = losses.mean()
     model.train()
-    return out
+    return out, accura
 
 
 class Zero_block(nn.Module):
@@ -73,6 +84,8 @@ class Zero_block(nn.Module):
         # Единая матрица преобразования для всех number_of_semantic_matrixes семантических проекций пайторч-стиле:
         self.linear = torch.nn.Linear(raw_embedding_size, number_of_semantic_matrixes * semantic_embedding_size)
         self.linear_2 = torch.nn.Linear(raw_embedding_size, message_embedding_size)
+
+        self.ln1 = nn.LayerNorm((chat_size,chat_size))
     def forward(self, batch_of_text_embeddings, batch_of_links = None):
         """ Размер пачки эмбеддингов (B T Cr) """
         B, T, C = batch_of_text_embeddings.shape
@@ -92,8 +105,8 @@ class Zero_block(nn.Module):
         # Шаг #3: вычисляем евклидову меру
         s = torch.sum((srep - intl_rep)**2 + 1e-3, -1)**0.5 # B T**T S C/C # 1e-3->1.6743; 1e-4->2.6743
         s_reshaped = - s.transpose(-2, -1).view(B, S, T, T)  # B S T T
-        s_reshaped = F.softmax(s_reshaped,-1)
-
+        # s_reshaped = F.softmax(s_reshaped,-1)
+        s_reshaped = self.ln1(s_reshaped)
         # Теперь получаем эмбеддинги нод из сырых эмбеддингов
         message_embeddings = self.linear_2(batch_of_text_embeddings)
         # Здесь, возможно, понадобится нормализация
@@ -118,7 +131,7 @@ class Zero_block(nn.Module):
             B,S,T,T = adj_matrices.shape; assert S == n_head
             # adj_matrices = F.softmax(adj_matrices, -1)
 
-        return adj_matrices, message_embeddings
+        return message_embeddings
 
 class Head(nn.Module):
     """ one head of self-attention """
@@ -258,13 +271,14 @@ class Final_block(nn.Module):
         # print(q)
         # compute attention scores ("affinities")
         wei = q @ k.transpose(-2, -1) * C ** -0.5  # (B, T, C) @ (B, C, T) -> (B, T, T)
-        wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        # wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        # wei = F.softmax(wei, dim=-1)  # (B, T, T)
         wei = self.layer_norm_1(wei)
         wei = self.dropout(wei)
 
         out = self.fff(wei.view(B, T*T))
         out = self.layer_norm_2(out)
-        out = F.softmax(out, dim = -1)
+        out = F.softmax(out, dim = -1) #
 
         return out
 
@@ -280,28 +294,30 @@ class BigramLanguageModel(nn.Module):
     def forward(self, raw_mes_embs, graph_adjacenties, targets=None):
         """ New forward function takes batch of embngs, batch of adjacenties
         and true attention vector of last message as a target"""
+        # print('graph_adjacenties.shape',graph_adjacenties.shape)
         B, G, T, T = graph_adjacenties.shape
         B, T, C = raw_mes_embs.shape
         # матрицы смежности и семантические матрицы из нулевого слоя:
-        adjs, mes_embs = self.zero_block(raw_mes_embs, graph_adjacenties)
+        # adjs, mes_embs = self.zero_block(raw_mes_embs, graph_adjacenties)
+        mes_embs = self.zero_block(raw_mes_embs, graph_adjacenties)
         # Подмешивание позиции:
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))  # (T,C)
         x = mes_embs + pos_emb  # (B,T,C)
 
         # засовываем в первый слой получившуюся пачку векторов:
 
-        x = self.block_1(x, adjs)  # (B,T,C)
+        # x = self.block_1(x, adjs)  # (B,T,C)
         # print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\n\n', x, '\n\n\n\n\n')
         # во второй слой входим без матриц смежности:
-        # x = self.block_2(x)
+        x = self.block_2(x)
         # финальный блок:
         x = self.final_block(x)
 
         if targets is None:
              loss = None
-             print('===========================================')
+             print('===========================!================')
         else:
-            loss = F.mse_loss(x, targets) #+ F.cross_entropy(x, targets)/10
+            loss = F.mse_loss(x, targets) + F.cross_entropy(x, targets)/5
             # loss = F.cross_entropy(x, targets)
         return x, loss
 
@@ -323,11 +339,11 @@ for iter in range(max_iters):
     # print('iteration',iter)
     # every once in a while evaluate the loss on train and val sets
     if iter % eval_interval == 0 or iter == max_iters - 1:
-        losses = estimate_loss()
+        losses, accura = estimate_loss()
         # print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        print(f"step {iter}: train loss {losses['train']:.4f}")
+        print(f"step {iter}: train loss {losses['train']:.4f}, accuracy: {accura}")
 
-    raw_embs, graph_adjs, target = get_batch('train')
+    raw_embs, graph_adjs, target = get_batch_f('train')
     predictions, loss = model(raw_embs, graph_adjs, target)
     # print('loss', loss.item(), 'pred', predictions, 'target', target)
     optimizer.zero_grad(set_to_none=True)

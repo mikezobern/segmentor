@@ -176,6 +176,8 @@ for i in range(1, chat_messages):
     candidates = candidates.fetchall()
     print(candidates)
 '''
+
+'''
 candidates_0 = cursor.execute(f'SELECT count(row_id) FROM {l_45_t} WHERE distance_to_parent>={chat_messages} ')
 candidates_0 = candidates_0.fetchall()
 print(0, '\t', candidates_0[0][0])
@@ -190,7 +192,9 @@ for i in range(1,chat_messages):
 
 print(class_sizes_dict)
 print('Среднее значение ',sum([class_sizes_dict[i] for i in class_sizes_dict if i>0])/(chat_messages-1))
+'''
 
+'''
 # Теперь для каждого класса создаём собственный список айдишников сообщений: всего 6 наборов айдишников
 ids_by_parent_dict = {}
 ids_0 = cursor.execute(f'SELECT row_id FROM {l_45_t} WHERE distance_to_parent>={chat_messages} ')
@@ -247,6 +251,8 @@ def get_bunch_of_embs_by_row_id(row_mes_num, chat_messages):
 # Следующий шаг — сериализоть [класс родителя, [ [эмбеддинг1],[...2],[...3],[...4]...]
 # И сделать csv-файл на 82к строк.
 '''
+
+'''
 import csv
 
 # Имя CSV-файла
@@ -270,4 +276,21 @@ with open(filename, mode='w', newline='') as file:
 print(f'Данные успешно записаны в файл "{filename}"')
 '''
 
-# Хотя лучше просто сделать функцию, которая делает батчи на лету! 16 Гб это слишком много.
+res = cursor.execute(f'SELECT * FROM {l_45_t} WHERE row_id = 10995') # row_id 87150
+res = res.fetchone()
+# print(res)
+
+def message_to_text(message_id):
+    mes_entry = cursor.execute(f'SELECT * FROM {l_w} WHERE message_id = {message_id}')
+    res = mes_entry.fetchone()
+    text_to_emb = ''
+    author = str(res[10])*(res[10]!=None) + str(res[11])*(res[11]!=None) + str(res[12])*(res[12]!=None)
+    if author=='':
+        author = 'Аноним'
+    text = str(res[4])*(res[4]!=None) + str(res[7])*(res[7]!=None)
+    text_to_emb = 'Автор сообщения: '+ author + '\n'+ text
+    return text_to_emb
+# print('messa to text mid 87144', message_to_text(87144))
+
+from get_embedding import get_embedding
+# print(get_embedding(message_to_text(87144)))
